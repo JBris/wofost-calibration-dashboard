@@ -4,10 +4,8 @@ import dash_bootstrap_components as dbc
 from dataproviders import parameters, agromanagement, weather
 import copy
 from pcse.models import Wofost72_WLP_FD
-import iterative_ensemble_smoother as ies
 import numpy as np
 import plotly.graph_objects as go
-from iterative_ensemble_smoother.utils import steplength_exponential
 
 register_page(__name__, path="/what-if", name="What-If Analysis")
 
