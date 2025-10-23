@@ -1,4 +1,4 @@
-from dash import dcc, html, Input, Output, register_page, callback, no_update, State
+from dash import dcc, html, Input, Output, register_page, callback, no_update, State, dash_table
 import pandas as pd
 import dash_bootstrap_components as dbc
 from dataproviders import parameters, agromanagement, weather
@@ -8,6 +8,7 @@ import iterative_ensemble_smoother as ies
 import numpy as np
 import plotly.graph_objects as go
 from iterative_ensemble_smoother.utils import steplength_exponential
+import sklearn.metrics as skmetrics
 
 register_page(__name__, path="/", name="Forecasting")
 
@@ -205,6 +206,22 @@ layout = dbc.Row([
                     ]
                 )
             ]),
+            dbc.Row(
+                dash_table.DataTable(
+                    id='metrics-table',
+                    columns=[
+                        {"name": "metric", "id": "metric", "editable": True}, 
+                        {"name": "value", "id": "value", "editable": True}
+                    ],
+                    data=[],
+                    filter_action="native",    
+                    sort_action="native",      
+                    row_selectable="multi",   
+                    selected_rows=[],         
+                    page_action="native",     
+                    page_size=10,              
+                )
+            ),
         ]),
     ]),
     dbc.Col([
@@ -279,6 +296,7 @@ def get_quantiles(Y_IES_ert, alpha):
     Output('lai-pi-scatter-plot', 'figure', allow_duplicate=True),
     Output('pred-obs-scatter-plot', 'figure', allow_duplicate=True),
     Output('residual-scatter-plot', 'figure', allow_duplicate=True),
+    Output('metrics-table', 'data', allow_duplicate=True),
     Output('store-ensemble-data', 'data', allow_duplicate=True),
     Input("btn-run", "n_clicks"),
     State("input-tdwi-mean", "value"),
@@ -377,7 +395,13 @@ def run_ensemble(
         fig_residuals.add_trace(go.Scatter(x=median, y=residuals, name="Predicted LAI", mode='markers'))        
         fig_residuals.update_layout(xaxis=dict(title="Residuals"), showlegend=True)
 
-        return fig_tdwi, fig_wav, fig_span, fig_smfcf, fig_lai, fig_pi_lai, fig_pred_obs, fig_residuals, ensemble_data
+        metrics = []
+        for metric in ["mean_squared_error", "mean_absolute_error", "r2_score", "mean_pinball_loss", "mean_absolute_percentage_error"]:
+            metric_func = getattr(skmetrics, metric)
+            metric_value = metric_func(median, df["LAI"])
+            metrics.append({"metric": metric, "value": metric_value})
+
+        return fig_tdwi, fig_wav, fig_span, fig_smfcf, fig_lai, fig_pi_lai, fig_pred_obs, fig_residuals, metrics, ensemble_data
     elif current_iteration > 0:
         override_parameters = state["override_parameters"]
         fig_tdwi, fig_wav, fig_span, fig_smfcf = plot_distributions(override_parameters)
@@ -416,8 +440,13 @@ def run_ensemble(
         fig_residuals.add_trace(go.Scatter(x=median, y=residuals, name="Predicted LAI", mode='markers'))        
         fig_residuals.update_layout(xaxis=dict(title="Residuals"), showlegend=True)
 
-        return fig_tdwi, fig_wav, fig_span, fig_smfcf, fig_lai, fig_pi_lai, fig_pred_obs, fig_residuals, ensemble_data
-    
+        metrics = []
+        for metric in ["mean_squared_error", "mean_absolute_error", "r2_score", "mean_pinball_loss", "mean_absolute_percentage_error"]:
+            metric_func = getattr(skmetrics, metric)
+            metric_value = metric_func(median, df["LAI"])
+            metrics.append({"metric": metric, "value": metric_value})
+
+        return fig_tdwi, fig_wav, fig_span, fig_smfcf, fig_lai, fig_pi_lai, fig_pred_obs, fig_residuals, metrics, ensemble_data    
     return no_update
 
 @callback(
@@ -429,6 +458,7 @@ def run_ensemble(
     Output('lai-pi-scatter-plot', 'figure', allow_duplicate=True),
     Output('pred-obs-scatter-plot', 'figure', allow_duplicate=True),
     Output('residual-scatter-plot', 'figure', allow_duplicate=True),
+    Output('metrics-table', 'data', allow_duplicate=True),
     Output('store-ensemble-data', 'data', allow_duplicate=True),
     Input("btn-reset", "n_clicks"),
     prevent_initial_call=True
@@ -441,4 +471,4 @@ def reset_ensemble(n):
     fig_lai, fig_pi_lai, fig_pred_obs, fig_residuals = go.Figure(), go.Figure(), go.Figure(), go.Figure()
 
     ensemble_data = {"num_iterations": 0}
-    return fig_tdwi, fig_wav, fig_span, fig_smfcf, fig_lai, fig_pi_lai, fig_pred_obs, fig_residuals, ensemble_data
+    return fig_tdwi, fig_wav, fig_span, fig_smfcf, fig_lai, fig_pi_lai, fig_pred_obs, fig_residuals, [], ensemble_data

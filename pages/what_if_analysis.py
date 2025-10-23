@@ -1,4 +1,4 @@
-from dash import dcc, html, Input, Output, register_page, callback, no_update, State
+from dash import dcc, html, Input, Output, register_page, callback, no_update, State, dash_table
 import pandas as pd
 import dash_bootstrap_components as dbc
 from dataproviders import parameters, agromanagement, weather
@@ -6,6 +6,7 @@ import copy
 from pcse.models import Wofost72_WLP_FD
 import numpy as np
 import plotly.graph_objects as go
+import sklearn.metrics as skmetrics
 
 register_page(__name__, path="/what-if", name="What-If Analysis")
 
@@ -128,6 +129,23 @@ layout = dbc.Row([
                     ]
                 )
             ]),
+            dbc.Row(
+                dash_table.DataTable(
+                    id='what-if-metrics-table',
+                    columns=[
+                        {"name": "scenario", "id": "scenario", "editable": True}, 
+                        {"name": "metric", "id": "metric", "editable": True}, 
+                        {"name": "value", "id": "value", "editable": True}
+                    ],
+                    data=[],
+                    filter_action="native",    
+                    sort_action="native",      
+                    row_selectable="multi",   
+                    selected_rows=[],         
+                    page_action="native",     
+                    page_size=10,              
+                )
+            ),
         ], style={"padding-bottom": "2em"}),
     ]),
     dbc.Col([
@@ -165,6 +183,7 @@ def get_quantiles(Y_IES_ert, alpha):
     Output('lai-residual-scatter-b-plot', 'figure', allow_duplicate=True),
     Output('span-hist-a-plot', 'figure', allow_duplicate=True),
     Output('span-hist-b-plot', 'figure', allow_duplicate=True),
+    Output('what-if-metrics-table', 'data', allow_duplicate=True),
     Input("btn-run", "n_clicks"),
     State("input-span-a-mean", "value"),
     State("input-span-a-sd", "value"),
@@ -251,6 +270,13 @@ def run_ensemble(
     fig_residuals_a.add_trace(go.Scatter(x=median, y=residuals, name="Predicted LAI", mode='markers'))        
     fig_residuals_a.update_layout(xaxis=dict(title="Scenario A: Residuals"), showlegend=True)
 
+    metrics = []
+    metric_list = ["mean_squared_error", "mean_absolute_error", "r2_score", "mean_pinball_loss", "mean_absolute_percentage_error"]
+    for metric in metric_list:
+        metric_func = getattr(skmetrics, metric)
+        metric_value = metric_func(median, df["LAI"])
+        metrics.append({"scenario": "A", "metric": metric, "value": metric_value})
+
     median, lower, upper, lower_q, upper_q = get_quantiles(LAI_b, alpha)
     fig_pi_lai_b = go.Figure()
     fig_pi_lai_b.add_trace(go.Scatter(x=df["day"], y=df["LAI"], name="Observed LAI")) 
@@ -268,7 +294,12 @@ def run_ensemble(
     fig_residuals_b.add_trace(go.Scatter(x=median, y=residuals, name="Predicted LAI", mode='markers'))        
     fig_residuals_b.update_layout(xaxis=dict(title="Scenario B: Residuals"), showlegend=True)
 
-    return fig_lai_a, fig_lai_b, fig_pi_lai_a, fig_pi_lai_b, fig_pred_obs_a, fig_pred_obs_b, fig_residuals_a, fig_residuals_b, fig_span_a, fig_span_b
+    for metric in metric_list:
+        metric_func = getattr(skmetrics, metric)
+        metric_value = metric_func(median, df["LAI"])
+        metrics.append({"scenario": "B", "metric": metric, "value": metric_value})
+
+    return fig_lai_a, fig_lai_b, fig_pi_lai_a, fig_pi_lai_b, fig_pred_obs_a, fig_pred_obs_b, fig_residuals_a, fig_residuals_b, fig_span_a, fig_span_b, metrics
 
 @callback(
     Output('lai-scatter-a-plot', 'figure', allow_duplicate=True),
@@ -281,6 +312,7 @@ def run_ensemble(
     Output('lai-residual-scatter-b-plot', 'figure', allow_duplicate=True),
     Output('span-hist-a-plot', 'figure', allow_duplicate=True),
     Output('span-hist-b-plot', 'figure', allow_duplicate=True),
+    Output('what-if-metrics-table', 'data', allow_duplicate=True),
     Input("btn-reset", "n_clicks"),
     prevent_initial_call=True
 )
@@ -291,4 +323,4 @@ def reset_ensemble(n):
     lai_a, lai_b, lai_pi_a, lai_pi_b = go.Figure(), go.Figure(), go.Figure(), go.Figure()
     span_a, span_b, pred_obs_a, pred_obs_b = go.Figure(), go.Figure(), go.Figure(), go.Figure()
     residual_a, residual_b = go.Figure(), go.Figure()
-    return lai_a, lai_b, lai_pi_a, lai_pi_b, pred_obs_a, pred_obs_b, residual_a, residual_b, span_a, span_b
+    return lai_a, lai_b, lai_pi_a, lai_pi_b, pred_obs_a, pred_obs_b, residual_a, residual_b, span_a, span_b, []
