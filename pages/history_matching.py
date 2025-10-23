@@ -1,5 +1,4 @@
 from dash import dcc, html, Input, Output, register_page, callback, no_update, State
-import plotly.express as px
 import pandas as pd
 import dash_bootstrap_components as dbc
 from dataproviders import parameters, agromanagement, weather
@@ -168,6 +167,31 @@ layout = dbc.Row([
             ]),
 
             dbc.Row([
+                dbc.Col([
+                    html.Label("Alpha", style={"padding-left": "2em"}),
+                    dbc.Tooltip("The alpha-level for the prediction intervals", target="input-alpha"),
+                    dcc.Input(
+                        id="input-alpha",
+                        type="number",
+                        value=0.95,
+                        placeholder="Alpha",
+                        style={"margin-left": "2em", "margin-bottom": "2em"}
+                    ),
+                ]),
+                dbc.Col([
+                    html.Label("Time Series Split", style={"padding-left": "2em"}),
+                    dbc.Tooltip("The date for the train-test split", target="dropdown-ts-split"),
+                    dcc.Dropdown(
+                        id='dropdown-ts-split',
+                        options=[{'label': cat, 'value': cat} for cat in df['day']],
+                        value=df['day'][int(len(df) / 2)],
+                        searchable=True ,
+                        style={"margin-left": "2em", "margin-bottom": "2em"}
+                    ),
+                ]),
+            ]),
+
+            dbc.Row([
                 dbc.Col(
                 [
                     dbc.Tooltip("Run the history matching procedure", target="btn-run"),
@@ -185,11 +209,13 @@ layout = dbc.Row([
     ]),
     dbc.Col([
         dbc.Row(dcc.Graph(id='lai-scatter-plot')),
+        dbc.Row(dcc.Graph(id='lai-pi-scatter-plot')),
+        dbc.Row(dcc.Graph(id='pred-obs-scatter-plot')),
+        dbc.Row(dcc.Graph(id='residual-scatter-plot')),
         dbc.Row(dcc.Graph(id='tdwi-hist-plot')),
         dbc.Row(dcc.Graph(id='wav-hist-plot')),
         dbc.Row(dcc.Graph(id='span-hist-plot')),
         dbc.Row(dcc.Graph(id='smfcf-hist-plot')),
-
     ]),
 ])
 
@@ -234,12 +260,25 @@ def plot_distributions(override_parameters):
 
     return fig_tdwi, fig_wav, fig_span, fig_smfcf
 
+def get_quantiles(Y_IES_ert, alpha):
+    lower_q = (1 - alpha) / 2   
+    upper_q = 1 - lower_q     
+    stacked_Y_IES = np.stack(Y_IES_ert)
+    median = np.median(stacked_Y_IES.T, axis=0)
+    lower = np.quantile(stacked_Y_IES.T, q=lower_q, axis=0)
+    upper = np.quantile(stacked_Y_IES.T, q=upper_q, axis=0)
+
+    return median, lower, upper, lower_q, upper_q
+
 @callback(
     Output('tdwi-hist-plot', 'figure', allow_duplicate=True),
     Output('wav-hist-plot', 'figure', allow_duplicate=True),
     Output('span-hist-plot', 'figure', allow_duplicate=True),
     Output('smfcf-hist-plot', 'figure', allow_duplicate=True),
     Output('lai-scatter-plot', 'figure', allow_duplicate=True),
+    Output('lai-pi-scatter-plot', 'figure', allow_duplicate=True),
+    Output('pred-obs-scatter-plot', 'figure', allow_duplicate=True),
+    Output('residual-scatter-plot', 'figure', allow_duplicate=True),
     Output('store-ensemble-data', 'data', allow_duplicate=True),
     Input("btn-run", "n_clicks"),
     State("input-tdwi-mean", "value"),
@@ -252,17 +291,22 @@ def plot_distributions(override_parameters):
     State("input-smfcf-sd", "value"),
     State("input-ensemble-size", "value"),
     State("input-number-iterations", "value"),
+    State("input-alpha", "value"),
+    State("dropdown-ts-split", "value"),
     State("store-ensemble-data", "data"),
     prevent_initial_call=True
 )
 def run_ensemble(
     n, tdwi_mean, tdwi_sd, wav_mean, wav_sd, 
     span_mean, span_sd, smfcf_mean, smfcf_sd,  
-    ensemble_size, num_iterations, ensemble_data
+    ensemble_size, num_iterations, alpha, ts_split, ensemble_data
 ):
     if isinstance(ensemble_data, list):
         ensemble_data = {"num_iterations": 0}
     current_iteration = ensemble_data["num_iterations"]
+    
+    if n == 0:
+        return no_update
     
     if current_iteration == 0:
         override_parameters = {}
@@ -310,11 +354,30 @@ def run_ensemble(
         fig_lai = go.Figure()
         fig_lai.add_trace(go.Scatter(x=df["day"], y=df["LAI"], name="Observed LAI"))        
         fig_lai.update_layout(xaxis=dict(title="LAI"), showlegend=True)
+        fig_lai.add_vline(x=ts_split, line=dict(color="Black", width=2, dash="dash"))
 
         for i in range(ensemble_size):
             fig_lai.add_trace(go.Scatter(x=df["day"], y=state["Y_IES_ert"].T[i], showlegend=False))  
 
-        return fig_tdwi, fig_wav, fig_span, fig_smfcf, fig_lai, ensemble_data
+        median, lower, upper, lower_q, upper_q = get_quantiles(state["Y_IES_ert"], alpha)
+        fig_pi_lai = go.Figure()
+        fig_pi_lai.add_trace(go.Scatter(x=df["day"], y=df["LAI"], name="Observed LAI")) 
+        fig_pi_lai.add_trace(go.Scatter(x=df["day"], y=median, name="Ensemble median LAI"))  
+        fig_pi_lai.add_trace(go.Scatter(x=df["day"], y=lower, name=f"Lower quantile LAI ({round(lower_q, 2)})"))  
+        fig_pi_lai.add_trace(go.Scatter(x=df["day"], y=upper, name=f"Upper quantile LAI ({round(upper_q, 2)})"))        
+        fig_pi_lai.update_layout(xaxis=dict(title=f"Quantile LAI (alpha={alpha})"), showlegend=True)
+        fig_pi_lai.add_vline(x=ts_split, line=dict(color="Black", width=2, dash="dash"))
+
+        fig_pred_obs = go.Figure()
+        fig_pred_obs.add_trace(go.Scatter(x=median, y=df["LAI"], name="Predicted vs Observed LAI", mode='markers')) 
+        fig_pred_obs.update_layout(xaxis=dict(title="Ensemble Median LAI"), yaxis=dict(title="Observed LAI"), showlegend=True)
+
+        residuals = df["LAI"] - median
+        fig_residuals = go.Figure()
+        fig_residuals.add_trace(go.Scatter(x=median, y=residuals, name="Predicted LAI", mode='markers'))        
+        fig_residuals.update_layout(xaxis=dict(title="Residuals"), showlegend=True)
+
+        return fig_tdwi, fig_wav, fig_span, fig_smfcf, fig_lai, fig_pi_lai, fig_pred_obs, fig_residuals, ensemble_data
     elif current_iteration > 0:
         override_parameters = state["override_parameters"]
         fig_tdwi, fig_wav, fig_span, fig_smfcf = plot_distributions(override_parameters)
@@ -336,7 +399,24 @@ def run_ensemble(
         for i in range(ensemble_size):
             fig_lai.add_trace(go.Scatter(x=df["day"], y=state["Y_IES_ert"].T[i], showlegend=False))  
 
-        return fig_tdwi, fig_wav, fig_span, fig_smfcf, fig_lai, ensemble_data
+        median, lower, upper, lower_q, upper_q = get_quantiles(state["Y_IES_ert"], alpha)
+        fig_pi_lai = go.Figure()
+        fig_pi_lai.add_trace(go.Scatter(x=df["day"], y=df["LAI"], name="Observed LAI")) 
+        fig_pi_lai.add_trace(go.Scatter(x=df["day"], y=median, name="Ensemble median LAI"))  
+        fig_pi_lai.add_trace(go.Scatter(x=df["day"], y=lower, name=f"Lower quantile LAI ({round(lower_q, 2)})"))  
+        fig_pi_lai.add_trace(go.Scatter(x=df["day"], y=upper, name=f"Upper quantile LAI ({round(upper_q, 2)})"))        
+        fig_pi_lai.update_layout(xaxis=dict(title=f"Quantile LAI (alpha={alpha})"), showlegend=True)
+
+        fig_pred_obs = go.Figure()
+        fig_pred_obs.add_trace(go.Scatter(x=median, y=df["LAI"], name="Predicted vs Observed LAI", mode='markers')) 
+        fig_pred_obs.update_layout(xaxis=dict(title="Ensemble Median LAI"), yaxis=dict(title="Observed LAI"), showlegend=True)
+
+        residuals = df["LAI"] - median
+        fig_residuals = go.Figure()
+        fig_residuals.add_trace(go.Scatter(x=median, y=residuals, name="Predicted LAI", mode='markers'))        
+        fig_residuals.update_layout(xaxis=dict(title="Residuals"), showlegend=True)
+
+        return fig_tdwi, fig_wav, fig_span, fig_smfcf, fig_lai, fig_pi_lai, fig_pred_obs, fig_residuals, ensemble_data
     
     return no_update
 
@@ -346,6 +426,9 @@ def run_ensemble(
     Output('span-hist-plot', 'figure', allow_duplicate=True),
     Output('smfcf-hist-plot', 'figure', allow_duplicate=True),
     Output('lai-scatter-plot', 'figure', allow_duplicate=True),
+    Output('lai-pi-scatter-plot', 'figure', allow_duplicate=True),
+    Output('pred-obs-scatter-plot', 'figure', allow_duplicate=True),
+    Output('residual-scatter-plot', 'figure', allow_duplicate=True),
     Output('store-ensemble-data', 'data', allow_duplicate=True),
     Input("btn-reset", "n_clicks"),
     prevent_initial_call=True
@@ -355,7 +438,7 @@ def reset_ensemble(n):
         return no_update
     
     fig_tdwi, fig_wav, fig_span, fig_smfcf = go.Figure(), go.Figure(), go.Figure(), go.Figure()
-    fig_lai = go.Figure()
+    fig_lai, fig_pi_lai, fig_pred_obs, fig_residuals = go.Figure(), go.Figure(), go.Figure(), go.Figure()
 
     ensemble_data = {"num_iterations": 0}
-    return fig_tdwi, fig_wav, fig_span, fig_smfcf, fig_lai, ensemble_data
+    return fig_tdwi, fig_wav, fig_span, fig_smfcf, fig_lai, fig_pi_lai, fig_pred_obs, fig_residuals, ensemble_data
